@@ -217,7 +217,7 @@ const RoomBooking = () => {
         {room.image && (
           <Box
             component="img"
-            src={`${API_URL.replace("/api/", "")}${room.image}`}
+            src={`${API_URL}${room.image}`}
             alt={room.name}
             sx={{
               width: "100%",
