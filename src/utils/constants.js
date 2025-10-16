@@ -3,4 +3,4 @@
 // mine
 export const API_URL = import.meta.env.DEV
   ? "http://localhost:5555/"
-  : "http://b15-rentai.mak3r.dev/api/";
+  : "https://b15-rentai.mak3r.dev/api/";
