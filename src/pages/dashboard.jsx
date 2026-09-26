@@ -1,244 +1,489 @@
-import {
-  Box,
-  Button,
-  Typography,
-  Container,
-  TableContainer,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-  Paper,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  TextField,
-} from "@mui/material";
-import { toast } from "sonner";
-import { getUsers, deleteUser } from "../utils/api_auth";
-import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useCookies } from "react-cookie";
-import { useNavigate } from "react-router";
+import { toast } from "sonner";
+import Header from "../components/Header";
+import { API_URL } from "../utils/constants";
 
-const Dashboard = () => {
-  const navigate = useNavigate();
-  const [users, setUsers] = useState([]);
-  const [filteredUsers, setFilteredUsers] = useState([]);
-  const [filter, setFilter] = useState("all");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [cookies] = useCookies(["currentuser"]);
-  const { currentuser = {} } = cookies;
-  const { token = "" } = currentuser;
+const money = (value) =>
+  `RM ${Number(value || 0).toLocaleString("en-MY", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 
-  // ✅ 初始化加载
-  useEffect(() => {
-    loadUsers();
-  }, []);
+const formatDate = (value) =>
+  value
+    ? new Date(value).toLocaleDateString("en-MY", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "—";
 
-  const loadUsers = async () => {
-    try {
-      const data = await getUsers();
-      if (Array.isArray(data)) {
-        setUsers(data);
-        setFilteredUsers(data);
-      } else {
-        toast.error("Failed to load users");
-      }
-    } catch (error) {
-      console.error(error);
-      toast.error("Error loading users");
-    }
-  };
+async function api(path, token, options = {}) {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  });
 
-  // ✅ 删除用户
-  const handleDelete = async (_id) => {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this user?"
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      data.error || data.message || `Request failed (${response.status})`
     );
-    if (!confirmed) return;
+  }
+
+  return data;
+}
+
+// Your backend returns six rooms/bookings per page.
+async function loadAllPages(path, token) {
+  const results = [];
+
+  for (let page = 1; page <= 100; page += 1) {
+    const separator = path.includes("?") ? "&" : "?";
+    const batch = await api(`${path}${separator}page=${page}`, token);
+
+    if (!Array.isArray(batch)) {
+      throw new Error("Unexpected response from the server");
+    }
+
+    results.push(...batch);
+
+    if (batch.length < 6) break;
+  }
+
+  return results;
+}
+
+export default function Dashboard() {
+  const navigate = useNavigate();
+  const [cookies] = useCookies(["currentuser"]);
+  const currentUser = cookies.currentuser;
+  const token = currentUser?.token;
+
+  const [tab, setTab] = useState("bookings");
+  const [bookings, setBookings] = useState([]);
+  const [rooms, setRooms] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function loadDashboard() {
+    if (!token) return;
+
+    setLoading(true);
+    setError("");
 
     try {
-      const result = await deleteUser(_id, token);
+      const [bookingData, roomData, userData] = await Promise.all([
+        loadAllPages("bookings", token),
+        loadAllPages("rooms", token),
+        api("users", token),
+      ]);
 
-      if (result?.message === "User deleted successfully") {
-        toast.success("User deleted successfully");
-        const latestUsers = await getUsers();
-        setUsers(latestUsers);
-        applyFilters(latestUsers, filter, searchTerm);
+      setBookings(bookingData);
+      setRooms(roomData);
+      setUsers(userData);
+    } catch (err) {
+      setError(err.message || "Could not load the dashboard");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== "admin") {
+      navigate("/login", { replace: true });
+      return;
+    }
+
+    loadDashboard();
+    // Load when the signed-in admin changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, currentUser?.role, navigate]);
+
+  const visibleRows = useMemo(() => {
+    const source =
+      tab === "bookings" ? bookings : tab === "rooms" ? rooms : users;
+
+    return source.filter((item) => {
+      let text;
+      let category;
+
+      if (tab === "bookings") {
+        text = `${item.user?.name || ""} ${item.user?.email || ""} ${
+          item.room?.name || ""
+        } ${item._id}`;
+        category = item.status?.toLowerCase();
+      } else if (tab === "rooms") {
+        text = `${item.name || ""} ${item.type || ""}`;
+        category = item.type;
       } else {
-        toast.error(result?.message || "Failed to delete user");
+        text = `${item.name || ""} ${item.email || ""}`;
+        category = item.role;
       }
-    } catch (error) {
-      console.error(error);
-      toast.error("Error deleting user");
-    }
-  };
 
-  // ✅ 通用筛选函数（过滤 + 搜索）
-  const applyFilters = (userList, roleFilter, search) => {
-    let filtered = [...userList];
-
-    // 角色筛选
-    if (roleFilter === "admin") {
-      filtered = filtered.filter((u) => u.role === "admin");
-    } else if (roleFilter === "user") {
-      filtered = filtered.filter((u) => u.role === "user");
-    }
-
-    // 搜索框过滤
-    if (search.trim() !== "") {
-      filtered = filtered.filter(
-        (u) =>
-          u.name.toLowerCase().includes(search.toLowerCase()) ||
-          u.email.toLowerCase().includes(search.toLowerCase())
+      return (
+        text.toLowerCase().includes(search.toLowerCase()) &&
+        (filter === "all" || category === filter)
       );
+    });
+  }, [tab, bookings, rooms, users, search, filter]);
+
+  const roomTypes = [...new Set(rooms.map((room) => room.type).filter(Boolean))];
+
+  async function updateStatus(bookingId, status) {
+    try {
+      await api(`bookings/${bookingId}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ status }),
+      });
+
+      toast.success("Booking status updated");
+      await loadDashboard();
+    } catch (err) {
+      toast.error(err.message || "Could not update booking");
+    }
+  }
+
+  async function removeItem(resource, id) {
+    const itemName =
+      resource === "users"
+        ? "user"
+        : resource === "rooms"
+          ? "room"
+          : "booking";
+
+    if (!window.confirm(`Delete this ${itemName}? This cannot be undone.`)) {
+      return;
     }
 
-    setFilteredUsers(filtered);
-  };
+    try {
+      await api(`${resource}/${id}`, token, { method: "DELETE" });
+      toast.success(`${itemName[0].toUpperCase() + itemName.slice(1)} deleted`);
+      await loadDashboard();
+    } catch (err) {
+      toast.error(err.message || `Could not delete ${itemName}`);
+    }
+  }
 
-  // ✅ 切换角色过滤
-  const handleFilterChange = (event) => {
-    const newFilter = event.target.value;
-    setFilter(newFilter);
-    applyFilters(users, newFilter, searchTerm);
-  };
+  function changeTab(nextTab) {
+    setTab(nextTab);
+    setSearch("");
+    setFilter("all");
+  }
 
-  // ✅ 搜索输入变化
-  const handleSearchChange = (event) => {
-    const newSearch = event.target.value;
-    setSearchTerm(newSearch);
-    applyFilters(users, filter, newSearch);
-  };
+  if (!currentUser || currentUser.role !== "admin") return null;
 
   return (
-    <Box>
-      <Typography
-        variant="h4"
-        sx={{ p: 4, display: "flex", justifyContent: "center" }}
-      >
-        User Dashboard
-      </Typography>
+    <>
+      <Header />
 
-      {/* 顶部操作栏 */}
-      <Box
-        sx={{
-          display: "flex",
-          flexWrap: "wrap",
-          justifyContent: "space-between",
-          alignItems: "center",
-          px: 4,
-          mb: 2,
-          gap: 2,
-        }}
-      >
-        {/* 左侧按钮与过滤 */}
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <Button variant="outlined" onClick={() => navigate("/rooms")}>
-            Back
-          </Button>
+      <main className="fs-page fs-dashboard">
+        <div className="fs-page-heading">
+          <div>
+            <span className="fs-eyebrow">ADMIN WORKSPACE</span>
+            <h1>Dashboard</h1>
+            <p>Welcome back, {currentUser.name}. Here’s what’s happening.</p>
+          </div>
 
-          <FormControl size="small" sx={{ minWidth: 120 }}>
-            <InputLabel>Filter</InputLabel>
-            <Select value={filter} onChange={handleFilterChange} label="Filter">
-              <MenuItem value="all">All</MenuItem>
-              <MenuItem value="admin">Admins</MenuItem>
-              <MenuItem value="user">Users</MenuItem>
-            </Select>
-          </FormControl>
+          {tab === "rooms" && (
+            <Link className="fs-button fs-button-dark" to="/rooms/new">
+              + Add room
+            </Link>
+          )}
 
-          {/* ✅ 搜索框 */}
-          <TextField
-            size="small"
-            label="Search"
-            placeholder="Search by name or email"
-            value={searchTerm}
-            onChange={handleSearchChange}
-          />
+          {tab === "users" && (
+            <Link className="fs-button fs-button-dark" to="/user/new">
+              + Add user
+            </Link>
+          )}
+        </div>
 
-          {/* 管理预订按钮（紧邻搜索框） */}
-          <Button
-            variant="contained"
-            color="secondary"
-            onClick={() => navigate("/manage-bookings")}
-          >
-            Manage Bookings
-          </Button>
-        </Box>
+        <div className="fs-stats">
+          <div className="fs-stat">
+            <span>Total bookings</span>
+            <strong>{bookings.length}</strong>
+            <small>All reservations</small>
+          </div>
 
-        {/* 右侧添加按钮 */}
-        <Button
-          variant="contained"
-          color="primary"
-          onClick={() => navigate("/user/new")}
-        >
-          Add User
-        </Button>
-      </Box>
+          <div className="fs-stat">
+            <span>Pending bookings</span>
+            <strong>
+              {
+                bookings.filter(
+                  (booking) => booking.status?.toLowerCase() === "pending"
+                ).length
+              }
+            </strong>
+            <small>Need attention</small>
+          </div>
 
-      {/* 用户表格 */}
-      <Container>
-        <TableContainer component={Paper}>
-          <Table>
-            <TableHead>
-              <TableRow>
-                <TableCell>Name</TableCell>
-                <TableCell align="left">Email</TableCell>
-                <TableCell align="left">ID</TableCell>
-                <TableCell align="left">Role</TableCell>
-                <TableCell align="right">Actions</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {filteredUsers && filteredUsers.length > 0 ? (
-                filteredUsers.map((user) => (
-                  <TableRow key={user._id}>
-                    <TableCell>{user.name}</TableCell>
-                    <TableCell>{user.email}</TableCell>
-                    <TableCell>{user._id}</TableCell>
-                    <TableCell>{user.role}</TableCell>
-                    <TableCell align="right">
-                      {user.role !== "admin" && (
-                        <>
-                          <Button
-                            variant="contained"
-                            component={Link}
-                            to={`/user/${user._id}/edit/`}
-                            color="success"
-                            size="small"
-                            sx={{ mr: 1 }}
-                          >
-                            EDIT
-                          </Button>
-                          <Button
-                            variant="contained"
-                            color="error"
-                            size="small"
-                            onClick={() => handleDelete(user._id)}
-                          >
-                            DELETE
-                          </Button>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
-              ) : (
-                <TableRow>
-                  <TableCell colSpan={5} align="center">
-                    No users found
-                  </TableCell>
-                </TableRow>
+          <div className="fs-stat">
+            <span>Available rooms</span>
+            <strong>{rooms.length}</strong>
+            <small>Rooms in your catalogue</small>
+          </div>
+
+          <div className="fs-stat">
+            <span>Guests</span>
+            <strong>
+              {users.filter((user) => user.role === "user").length}
+            </strong>
+            <small>Registered customers</small>
+          </div>
+        </div>
+
+        <section className="fs-table-section">
+          <div className="fs-tabs">
+            {["bookings", "rooms", "users"].map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={tab === name ? "active" : ""}
+                onClick={() => changeTab(name)}
+              >
+                {name[0].toUpperCase() + name.slice(1)}
+                <span>
+                  {name === "bookings"
+                    ? bookings.length
+                    : name === "rooms"
+                      ? rooms.length
+                      : users.length}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="fs-toolbar">
+            <input
+              type="search"
+              aria-label={`Search ${tab}`}
+              placeholder={`Search ${tab}...`}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+
+            <select
+              aria-label={`Filter ${tab}`}
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            >
+              <option value="all">All {tab}</option>
+
+              {tab === "bookings" &&
+                ["pending", "confirmed", "cancelled"].map((status) => (
+                  <option key={status} value={status}>
+                    {status[0].toUpperCase() + status.slice(1)}
+                  </option>
+                ))}
+
+              {tab === "users" && (
+                <>
+                  <option value="user">Users</option>
+                  <option value="admin">Admins</option>
+                </>
               )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Container>
-    </Box>
-  );
-};
 
-export default Dashboard;
+              {tab === "rooms" &&
+                roomTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+            </select>
+
+            <span className="fs-results">
+              {visibleRows.length} result{visibleRows.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {error && (
+            <div className="fs-error">
+              {error}
+              <button onClick={loadDashboard}>Try again</button>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="fs-empty">Loading dashboard...</div>
+          ) : visibleRows.length === 0 ? (
+            <div className="fs-empty">
+              <h3>No {tab} found</h3>
+              <p>Try another search or filter.</p>
+            </div>
+          ) : (
+            <div className="fs-table-scroll">
+              <table className="fs-table">
+                {tab === "bookings" && (
+                  <>
+                    <thead>
+                      <tr>
+                        <th>Guest</th>
+                        <th>Room</th>
+                        <th>Stay dates</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {visibleRows.map((booking) => (
+                        <tr key={booking._id}>
+                          <td>
+                            <strong>
+                              {booking.user?.name || "Deleted user"}
+                            </strong>
+                            <small>{booking.user?.email || ""}</small>
+                          </td>
+
+                          <td>{booking.room?.name || "Deleted room"}</td>
+
+                          <td>
+                            {formatDate(booking.checkInDate)}
+                            <br />
+                            <span className="fs-muted">
+                              to {formatDate(booking.checkOutDate)}
+                            </span>
+                          </td>
+
+                          <td>{money(booking.totalPrice)}</td>
+
+                          <td>
+                            <span
+                              className={`fs-badge ${
+                                booking.status?.toLowerCase() || "pending"
+                              }`}
+                            >
+                              {booking.status || "Pending"}
+                            </span>
+                          </td>
+
+                          <td>
+                            <div className="fs-row-actions">
+                              <select
+                                aria-label={`Status for booking ${booking._id}`}
+                                value={booking.status || "Pending"}
+                                onChange={(event) =>
+                                  updateStatus(
+                                    booking._id,
+                                    event.target.value
+                                  )
+                                }
+                              >
+                                <option>Pending</option>
+                                <option>Confirmed</option>
+                                <option>Cancelled</option>
+                              </select>
+
+                              <button
+                                className="fs-delete"
+                                onClick={() =>
+                                  removeItem("bookings", booking._id)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </>
+                )}
+
+                {tab === "rooms" && (
+                  <>
+                    <thead>
+                      <tr>
+                        <th>Room</th>
+                        <th>Type</th>
+                        <th>Capacity</th>
+                        <th>Price per night</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {visibleRows.map((room) => (
+                        <tr key={room._id}>
+                          <td><strong>{room.name}</strong></td>
+                          <td>{room.type}</td>
+                          <td>{room.capacity} guests</td>
+                          <td>{money(room.price)}</td>
+                          <td>
+                            <div className="fs-row-actions">
+                              <Link to={`/rooms/${room._id}/edit`}>Edit</Link>
+                              <button
+                                className="fs-delete"
+                                onClick={() =>
+                                  removeItem("rooms", room._id)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </>
+                )}
+
+                {tab === "users" && (
+                  <>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {visibleRows.map((user) => (
+                        <tr key={user._id}>
+                          <td><strong>{user.name}</strong></td>
+                          <td>{user.email}</td>
+                          <td>
+                            <span className="fs-badge neutral">
+                              {user.role}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="fs-row-actions">
+                              <Link to={`/user/${user._id}/edit`}>Edit</Link>
+                              <button
+                                className="fs-delete"
+                                disabled={user._id === currentUser._id}
+                                onClick={() =>
+                                  removeItem("users", user._id)
+                                }
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </>
+                )}
+              </table>
+            </div>
+          )}
+        </section>
+      </main>
+    </>
+  );
+}
